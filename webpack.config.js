@@ -21,6 +21,6 @@ module.exports = {
                 './styles.css'
             ]
         }),
-        new Dotenv()
+        new Dotenv({systemvars: true})
     ]
 };

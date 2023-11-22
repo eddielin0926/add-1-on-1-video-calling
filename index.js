@@ -1,13 +1,17 @@
 // Make sure to install the necessary dependencies
 const { CallClient, VideoStreamRenderer, LocalVideoStream } = require('@azure/communication-calling');
 const { AzureCommunicationTokenCredential } = require('@azure/communication-common');
-const { CommunicationIdentityClient } = require('@azure/communication-identity');
 const { AzureLogger, setLogLevel } = require("@azure/logger");
+
 // Set the log level and output
 setLogLevel('verbose');
 AzureLogger.log = (...args) => {
-    console.log(...args);
+  console.log(...args);
 };
+
+
+const base_url = process.env.API_URI;
+const role = process.env.ROLE;
 
 // Calling web sdk objects
 let callAgent;
@@ -18,6 +22,7 @@ let localVideoStream;
 let localVideoStreamRenderer;
 
 // UI widgets
+let robotSelection = document.getElementById('robots');
 let startCallButton = document.getElementById('start-call-button');
 let hangUpCallButton = document.getElementById('hangup-call-button');
 let acceptCallButton = document.getElementById('accept-call-button');
@@ -29,50 +34,47 @@ let localVideoCover = document.getElementById('localVideoCover');
 let localVideoContainer = document.getElementById('localVideoContainer');
 
 
-const refreshToken = async (identity) => {
-// Instantiate the identity client
-  const connectionString = process.env.ACS_CONNECTION_STRING;
-  const identityClient = new CommunicationIdentityClient(connectionString);
-
-  // Issue an access token with a validity of 24 hours and the "voip" scope for an identity
-  let tokenResponse = await identityClient.getToken({ communicationUserId: identity }, ["voip"]);
-
-  // Get the token and its expiration date from the response
-  const { token, expiresOn } = tokenResponse;
-  return token;
-}
-
-
 /**
  * Using the CallClient, initialize a CallAgent instance with a CommunicationUserCredential which will enable us to make outgoing calls and receive incoming calls. 
  * You can then use the CallClient.getDeviceManager() API instance to get the DeviceManager.
  */
 (async () => {
-    try {
-        const callClient = new CallClient(); 
-        const userId = "8:acs:89e96777-ed68-47e5-8c48-70d452413f6a_0000001c-71a1-6427-f40f-343a0d00a439"
-        const userAccessToken = await refreshToken(userId)
-        tokenCredential = new AzureCommunicationTokenCredential(userAccessToken);
-        callAgent = await callClient.createCallAgent(tokenCredential)
-        // Set up a camera device to use.
-        deviceManager = await callClient.getDeviceManager();
-        await deviceManager.askDevicePermission({ video: true });
-        await deviceManager.askDevicePermission({ audio: true });
-        // Listen for an incoming call to accept.
-        callAgent.on('incomingCall', async (args) => {
-            try {
-                incomingCall = args.incomingCall;
-                acceptCallButton.disabled = false;
-                startCallButton.disabled = true;
-            } catch (error) {
-                console.error(error);
-            }
-        });
-
-        startCallButton.disabled = false;
-    } catch(error) {
-        console.error(error);
+  try {
+    if (role != "web") {
+      robotSelection.hidden = true;
     }
+    const callClient = new CallClient();
+    const data = await fetch(`${base_url}/ids/${role}`).then(res => res.json())
+    const userAccessToken = data.token;
+    tokenCredential = new AzureCommunicationTokenCredential(userAccessToken);
+    callAgent = await callClient.createCallAgent(tokenCredential)
+    // Set up a camera device to use.
+    deviceManager = await callClient.getDeviceManager();
+    await deviceManager.askDevicePermission({ video: true });
+    await deviceManager.askDevicePermission({ audio: true });
+    // Listen for an incoming call to accept.
+    callAgent.on('incomingCall', async (args) => {
+      try {
+        incomingCall = args.incomingCall;
+        if (role == "web") {
+          acceptCallButton.disabled = false;
+          startCallButton.disabled = true;
+        } else {
+          const localVideoStream = await createLocalVideoStream();
+          const videoOptions = localVideoStream ? { localVideoStreams: [localVideoStream] } : undefined;
+          call = await incomingCall.accept({ videoOptions });
+          // Subscribe to the call's properties and events.
+          subscribeToCall(call);
+        }
+      } catch (error) {
+        console.error(error);
+      }
+    });
+
+    startCallButton.disabled = false;
+  } catch (error) {
+    console.error(error);
+  }
 })();
 
 /**
@@ -84,11 +86,17 @@ const refreshToken = async (identity) => {
  * localVideoStream array to the call method. Once your call connects it will automatically start sending a video stream to the other participant. 
  */
 startCallButton.onclick = async () => {
-    try {
-        startCallButton.disabled = true
-    } catch (error) {
-        console.error(error);
-    }
+  try {
+    const robotId = robotSelection.options[robotSelection.selectedIndex].value;
+    const callee = await fetch(`${base_url}/ids/${robotId}`).then(res => res.json())
+    const localVideoStream = await createLocalVideoStream();
+    const videoOptions = localVideoStream ? { localVideoStreams: [localVideoStream] } : undefined;
+    call = callAgent.startCall([{ communicationUserId: callee.id }], { videoOptions });
+    // Subscribe to the call's properties and events.
+    subscribeToCall(call);
+  } catch (error) {
+    console.error(error);
+  }
 }
 
 /**
@@ -98,15 +106,15 @@ startCallButton.onclick = async () => {
  * You can pass the local video stream which you want to use to accept the call with.
  */
 acceptCallButton.onclick = async () => {
-    try {
-        const localVideoStream = await createLocalVideoStream();
-        const videoOptions = localVideoStream ? { localVideoStreams: [localVideoStream] } : undefined;
-        call = await incomingCall.accept({ videoOptions });
-        // Subscribe to the call's properties and events.
-        subscribeToCall(call);
-    } catch (error) {
-        console.error(error);
-    }
+  try {
+    const localVideoStream = await createLocalVideoStream();
+    const videoOptions = localVideoStream ? { localVideoStreams: [localVideoStream] } : undefined;
+    call = await incomingCall.accept({ videoOptions });
+    // Subscribe to the call's properties and events.
+    subscribeToCall(call);
+  } catch (error) {
+    console.error(error);
+  }
 }
 
 /**
@@ -114,73 +122,73 @@ acceptCallButton.onclick = async () => {
  * Listen for property changes and collection updates.
  */
 subscribeToCall = (call) => {
-    try {
-        // Inspect the initial call.id value.
-        console.log(`Call Id: ${call.id}`);
-        //Subscribe to call's 'idChanged' event for value changes.
-        call.on('idChanged', () => {
-            console.log(`Call Id changed: ${call.id}`); 
-        });
+  try {
+    // Inspect the initial call.id value.
+    console.log(`Call Id: ${call.id}`);
+    //Subscribe to call's 'idChanged' event for value changes.
+    call.on('idChanged', () => {
+      console.log(`Call Id changed: ${call.id}`);
+    });
 
-        // Inspect the initial call.state value.
-        console.log(`Call state: ${call.state}`);
-        // Subscribe to call's 'stateChanged' event for value changes.
-        call.on('stateChanged', async () => {
-            console.log(`Call state changed: ${call.state}`);
-            if(call.state === 'Connected') {
-                acceptCallButton.disabled = true;
-                startCallButton.disabled = true;
-                hangUpCallButton.disabled = false;
-                startVideoButton.disabled = false;
-                stopVideoButton.disabled = false;
-                remoteVideosCover.hidden = true
-                remoteVideosGallery.hidden = false;
-            } else if (call.state === 'Disconnected') {
-                startCallButton.disabled = false;
-                hangUpCallButton.disabled = true;
-                startVideoButton.disabled = true;
-                stopVideoButton.disabled = true;
-                console.log(`Call ended, call end reason={code=${call.callEndReason.code}, subCode=${call.callEndReason.subCode}}`);
-            }   
-        });
+    // Inspect the initial call.state value.
+    console.log(`Call state: ${call.state}`);
+    // Subscribe to call's 'stateChanged' event for value changes.
+    call.on('stateChanged', async () => {
+      console.log(`Call state changed: ${call.state}`);
+      if (call.state === 'Connected') {
+        acceptCallButton.disabled = true;
+        startCallButton.disabled = true;
+        hangUpCallButton.disabled = false;
+        startVideoButton.disabled = false;
+        stopVideoButton.disabled = false;
+        remoteVideosCover.hidden = true
+        remoteVideosGallery.hidden = false;
+      } else if (call.state === 'Disconnected') {
+        startCallButton.disabled = false;
+        hangUpCallButton.disabled = true;
+        startVideoButton.disabled = true;
+        stopVideoButton.disabled = true;
+        console.log(`Call ended, call end reason={code=${call.callEndReason.code}, subCode=${call.callEndReason.subCode}}`);
+      }
+    });
 
-        call.on('isLocalVideoStartedChanged', () => {
-            console.log(`isLocalVideoStarted changed: ${call.isLocalVideoStarted}`);
-        });
-        console.log(`isLocalVideoStarted: ${call.isLocalVideoStarted}`);
-        call.localVideoStreams.forEach(async (lvs) => {
-            localVideoStream = lvs;
-            await displayLocalVideoStream();
-        });
-        call.on('localVideoStreamsUpdated', e => {
-            e.added.forEach(async (lvs) => {
-                localVideoStream = lvs;
-                await displayLocalVideoStream();
-            });
-            e.removed.forEach(lvs => {
-               removeLocalVideoStream();
-            });
-        });
-        
-        // Inspect the call's current remote participants and subscribe to them.
-        call.remoteParticipants.forEach(remoteParticipant => {
-            subscribeToRemoteParticipant(remoteParticipant);
-        });
-        // Subscribe to the call's 'remoteParticipantsUpdated' event to be
-        // notified when new participants are added to the call or removed from the call.
-        call.on('remoteParticipantsUpdated', e => {
-            // Subscribe to new remote participants that are added to the call.
-            e.added.forEach(remoteParticipant => {
-                subscribeToRemoteParticipant(remoteParticipant)
-            });
-            // Unsubscribe from participants that are removed from the call
-            e.removed.forEach(remoteParticipant => {
-                console.log('Remote participant removed from the call.');
-            });
-        });
-    } catch (error) {
-        console.error(error);
-    }
+    call.on('isLocalVideoStartedChanged', () => {
+      console.log(`isLocalVideoStarted changed: ${call.isLocalVideoStarted}`);
+    });
+    console.log(`isLocalVideoStarted: ${call.isLocalVideoStarted}`);
+    call.localVideoStreams.forEach(async (lvs) => {
+      localVideoStream = lvs;
+      await displayLocalVideoStream();
+    });
+    call.on('localVideoStreamsUpdated', e => {
+      e.added.forEach(async (lvs) => {
+        localVideoStream = lvs;
+        await displayLocalVideoStream();
+      });
+      e.removed.forEach(lvs => {
+        removeLocalVideoStream();
+      });
+    });
+
+    // Inspect the call's current remote participants and subscribe to them.
+    call.remoteParticipants.forEach(remoteParticipant => {
+      subscribeToRemoteParticipant(remoteParticipant);
+    });
+    // Subscribe to the call's 'remoteParticipantsUpdated' event to be
+    // notified when new participants are added to the call or removed from the call.
+    call.on('remoteParticipantsUpdated', e => {
+      // Subscribe to new remote participants that are added to the call.
+      e.added.forEach(remoteParticipant => {
+        subscribeToRemoteParticipant(remoteParticipant)
+      });
+      // Unsubscribe from participants that are removed from the call
+      e.removed.forEach(remoteParticipant => {
+        console.log('Remote participant removed from the call.');
+      });
+    });
+  } catch (error) {
+    console.error(error);
+  }
 }
 
 /**
@@ -188,33 +196,33 @@ subscribeToCall = (call) => {
  * Listen for property changes and collection udpates.
  */
 subscribeToRemoteParticipant = (remoteParticipant) => {
-    try {
-        // Inspect the initial remoteParticipant.state value.
-        console.log(`Remote participant state: ${remoteParticipant.state}`);
-        // Subscribe to remoteParticipant's 'stateChanged' event for value changes.
-        remoteParticipant.on('stateChanged', () => {
-            console.log(`Remote participant state changed: ${remoteParticipant.state}`);
-        });
+  try {
+    // Inspect the initial remoteParticipant.state value.
+    console.log(`Remote participant state: ${remoteParticipant.state}`);
+    // Subscribe to remoteParticipant's 'stateChanged' event for value changes.
+    remoteParticipant.on('stateChanged', () => {
+      console.log(`Remote participant state changed: ${remoteParticipant.state}`);
+    });
 
-        // Inspect the remoteParticipants's current videoStreams and subscribe to them.
-        remoteParticipant.videoStreams.forEach(remoteVideoStream => {
-            subscribeToRemoteVideoStream(remoteVideoStream)
-        });
-        // Subscribe to the remoteParticipant's 'videoStreamsUpdated' event to be
-        // notified when the remoteParticiapant adds new videoStreams and removes video streams.
-        remoteParticipant.on('videoStreamsUpdated', e => {
-            // Subscribe to new remote participant's video streams that were added.
-            e.added.forEach(remoteVideoStream => {
-                subscribeToRemoteVideoStream(remoteVideoStream)
-            });
-            // Unsubscribe from remote participant's video streams that were removed.
-            e.removed.forEach(remoteVideoStream => {
-                console.log('Remote participant video stream was removed.');
-            })
-        });
-    } catch (error) {
-        console.error(error);
-    }
+    // Inspect the remoteParticipants's current videoStreams and subscribe to them.
+    remoteParticipant.videoStreams.forEach(remoteVideoStream => {
+      subscribeToRemoteVideoStream(remoteVideoStream)
+    });
+    // Subscribe to the remoteParticipant's 'videoStreamsUpdated' event to be
+    // notified when the remoteParticiapant adds new videoStreams and removes video streams.
+    remoteParticipant.on('videoStreamsUpdated', e => {
+      // Subscribe to new remote participant's video streams that were added.
+      e.added.forEach(remoteVideoStream => {
+        subscribeToRemoteVideoStream(remoteVideoStream)
+      });
+      // Unsubscribe from remote participant's video streams that were removed.
+      e.removed.forEach(remoteVideoStream => {
+        console.log('Remote participant video stream was removed.');
+      })
+    });
+  } catch (error) {
+    console.error(error);
+  }
 }
 
 /**
@@ -224,61 +232,61 @@ subscribeToRemoteParticipant = (remoteParticipant) => {
  * you can choose to destroy the whole 'Renderer', a specific 'RendererView' or keep them, but this will result in displaying blank video frame.
  */
 subscribeToRemoteVideoStream = async (remoteVideoStream) => {
-    let renderer = new VideoStreamRenderer(remoteVideoStream);
-    let view;
-    let remoteVideoContainer = document.createElement('div');
-    remoteVideoContainer.className = 'remote-video-container';
+  let renderer = new VideoStreamRenderer(remoteVideoStream);
+  let view;
+  let remoteVideoContainer = document.createElement('div');
+  remoteVideoContainer.className = 'remote-video-container';
 
-    let loadingSpinner = document.createElement('div');
-    loadingSpinner.className = 'loading-spinner';
-    remoteVideoStream.on('isReceivingChanged', () => {
-        try {
-            if (remoteVideoStream.isAvailable) {
-                const isReceiving = remoteVideoStream.isReceiving;
-                const isLoadingSpinnerActive = remoteVideoContainer.contains(loadingSpinner);
-                if (!isReceiving && !isLoadingSpinnerActive) {
-                    remoteVideoContainer.appendChild(loadingSpinner);
-                } else if (isReceiving && isLoadingSpinnerActive) {
-                    remoteVideoContainer.removeChild(loadingSpinner);
-                }
-            }
-        } catch (e) {
-            console.error(e);
+  let loadingSpinner = document.createElement('div');
+  loadingSpinner.className = 'loading-spinner';
+  remoteVideoStream.on('isReceivingChanged', () => {
+    try {
+      if (remoteVideoStream.isAvailable) {
+        const isReceiving = remoteVideoStream.isReceiving;
+        const isLoadingSpinnerActive = remoteVideoContainer.contains(loadingSpinner);
+        if (!isReceiving && !isLoadingSpinnerActive) {
+          remoteVideoContainer.appendChild(loadingSpinner);
+        } else if (isReceiving && isLoadingSpinnerActive) {
+          remoteVideoContainer.removeChild(loadingSpinner);
         }
-    });
-
-    const createView = async () => {
-        // Create a renderer view for the remote video stream.
-        view = await renderer.createView();
-        // Attach the renderer view to the UI.
-        remoteVideoContainer.appendChild(view.target);
-        remoteVideosGallery.appendChild(remoteVideoContainer);
+      }
+    } catch (e) {
+      console.error(e);
     }
+  });
 
-    // Remote participant has switched video on/off
-    remoteVideoStream.on('isAvailableChanged', async () => {
-        try {
-            if (remoteVideoStream.isAvailable) {
-                remoteVideosCover.hidden = true
-                await createView();
-            } else {
-                view.dispose();
-                remoteVideosGallery.removeChild(remoteVideoContainer);
-                remoteVideosCover.hidden = false
-            }
-        } catch (e) {
-            console.error(e);
-        }
-    });
+  const createView = async () => {
+    // Create a renderer view for the remote video stream.
+    view = await renderer.createView();
+    // Attach the renderer view to the UI.
+    remoteVideoContainer.appendChild(view.target);
+    remoteVideosGallery.appendChild(remoteVideoContainer);
+  }
 
-    // Remote participant has video on initially.
-    if (remoteVideoStream.isAvailable) {
-        try {
-            await createView();
-        } catch (e) {
-            console.error(e);
-        }
+  // Remote participant has switched video on/off
+  remoteVideoStream.on('isAvailableChanged', async () => {
+    try {
+      if (remoteVideoStream.isAvailable) {
+        remoteVideosCover.hidden = true
+        await createView();
+      } else {
+        view.dispose();
+        remoteVideosGallery.removeChild(remoteVideoContainer);
+        remoteVideosCover.hidden = false
+      }
+    } catch (e) {
+      console.error(e);
     }
+  });
+
+  // Remote participant has video on initially.
+  if (remoteVideoStream.isAvailable) {
+    try {
+      await createView();
+    } catch (e) {
+      console.error(e);
+    }
+  }
 }
 
 /**
@@ -286,12 +294,12 @@ subscribeToRemoteVideoStream = async (remoteVideoStream) => {
  * This will send your local video stream to remote participants so they can view it.
  */
 startVideoButton.onclick = async () => {
-    try {
-        const localVideoStream = await createLocalVideoStream();
-        await call.startVideo(localVideoStream);
-    } catch (error) {
-        console.error(error);
-    }
+  try {
+    const localVideoStream = await createLocalVideoStream();
+    await call.startVideo(localVideoStream);
+  } catch (error) {
+    console.error(error);
+  }
 }
 
 /**
@@ -299,11 +307,11 @@ startVideoButton.onclick = async () => {
  * This will stop your local video stream from being sent to remote participants.
  */
 stopVideoButton.onclick = async () => {
-    try {
-        await call.stopVideo(localVideoStream);
-    } catch (error) {
-        console.error(error);
-    }
+  try {
+    await call.stopVideo(localVideoStream);
+  } catch (error) {
+    console.error(error);
+  }
 }
 
 /**
@@ -312,46 +320,46 @@ stopVideoButton.onclick = async () => {
  * You may then attach view.target to any UI element. 
  */
 createLocalVideoStream = async () => {
-    const camera = (await deviceManager.getCameras())[0];
-    if (camera) {
-        return new LocalVideoStream(camera);
-    } else {
-        console.error(`No camera device found on the system`);
-    }
+  const camera = (await deviceManager.getCameras())[0];
+  if (camera) {
+    return new LocalVideoStream(camera);
+  } else {
+    console.error(`No camera device found on the system`);
+  }
 }
 
 /**
  * Display your local video stream preview in your UI
  */
 displayLocalVideoStream = async () => {
-    try {
-        localVideoStreamRenderer = new VideoStreamRenderer(localVideoStream);
-        const view = await localVideoStreamRenderer.createView();
-        localVideoCover.hidden = true
-        localVideoContainer.hidden = false;
-        localVideoContainer.appendChild(view.target);
-    } catch (error) {
-        console.error(error);
-    } 
+  try {
+    localVideoStreamRenderer = new VideoStreamRenderer(localVideoStream);
+    const view = await localVideoStreamRenderer.createView();
+    localVideoCover.hidden = true
+    localVideoContainer.hidden = false;
+    localVideoContainer.appendChild(view.target);
+  } catch (error) {
+    console.error(error);
+  }
 }
 
 /**
  * Remove your local video stream preview from your UI
  */
-removeLocalVideoStream = async() => {
-    try {
-        localVideoStreamRenderer.dispose();
-        localVideoContainer.hidden = true;
-        localVideoCover.hidden = false
-    } catch (error) {
-        console.error(error);
-    } 
+removeLocalVideoStream = async () => {
+  try {
+    localVideoStreamRenderer.dispose();
+    localVideoContainer.hidden = true;
+    localVideoCover.hidden = false
+  } catch (error) {
+    console.error(error);
+  }
 }
 
 /**
  * End current call
  */
 hangUpCallButton.addEventListener("click", async () => {
-    // end the current call
-    await call.hangUp();
+  // end the current call
+  await call.hangUp();
 });
