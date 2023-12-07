@@ -1,20 +1,11 @@
-FROM node:20 as build
-
-ARG API_URI
-ARG ROLE
+FROM node:20
 
 WORKDIR /usr/src/app
 
 # Install dependencies first, as they change less often than code.
 COPY package.json package-lock.json* ./
-RUN npm ci && npm cache clean --force
-
-ENV API_URI=${API_URI}
-ENV ROLE=${ROLE}
+RUN npm i && npm cache clean --force
 
 COPY . .
-RUN npm run build
 
-FROM nginx:alpine
-COPY --from=build /usr/src/app/dist /usr/share/nginx/html
-EXPOSE 80
+CMD [ "npm", "run", "start"]
